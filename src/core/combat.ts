@@ -169,6 +169,8 @@ export class TowerInstance {
   readonly def: TowerDef;
   position: Point;
   loadedAmmo: AmmoInstance | null = null;
+  /** 是否曾经装填过弹药（用于区分"从未装填的裸塔"与"弹药耗尽后掉级回默认弹药"两种视觉状态） */
+  everLoadedAmmo = false;
   cooldownRemaining = 0;
 
   constructor(def: TowerDef, position: Point) {

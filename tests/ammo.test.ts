@@ -6,6 +6,7 @@ import {
   AmmoRackFullError,
   TEMP_AMMO_DURATION_SECONDS,
   TEMP_AMMO_MAX_SHOTS,
+  getAmmoUrgency,
 } from "../src/core/ammo";
 import { getMaterialById } from "../src/config/materials";
 
@@ -113,5 +114,31 @@ describe("AmmoRack", () => {
     expect(ok).toBe(true);
     expect(ammo.status).toBe("in_rack");
     expect(rack.isFull()).toBe(true);
+  });
+});
+
+describe("getAmmoUrgency", () => {
+  it("returns ok for null ammo, permanent ammo, or rack-stored ammo", () => {
+    expect(getAmmoUrgency(null)).toBe("ok");
+    const perm = makePermAmmo();
+    perm.load();
+    perm.tick(999999);
+    expect(getAmmoUrgency(perm)).toBe("ok");
+    const rackAmmo = makeTempAmmo();
+    expect(getAmmoUrgency(rackAmmo)).toBe("ok"); // in_rack, not loaded yet
+  });
+
+  it("escalates ok -> warning -> critical as a loaded temp ammo is consumed", () => {
+    const ammo = makeTempAmmo();
+    ammo.load();
+    expect(getAmmoUrgency(ammo)).toBe("ok");
+
+    // 消耗到剩余 25%（低于 30% 警戒线，高于 10% 危急线）
+    ammo.tick(TEMP_AMMO_DURATION_SECONDS * 0.75);
+    expect(getAmmoUrgency(ammo)).toBe("warning");
+
+    // 消耗到剩余 5%（低于 10% 危急线）
+    ammo.tick(TEMP_AMMO_DURATION_SECONDS * 0.2);
+    expect(getAmmoUrgency(ammo)).toBe("critical");
   });
 });

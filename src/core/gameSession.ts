@@ -5,7 +5,7 @@ import { getTowerDef, type TowerKind } from "../config/towers";
 import { getMaterialById } from "../config/materials";
 import { Wallet, computeKillReward } from "./economy";
 import { craft, predictCraft, RecipeJournal, type AmmoTier, type Rng } from "./craftingEngine";
-import { AmmoInstance, AmmoRack } from "./ammo";
+import { AmmoInstance, AmmoRack, getAmmoUrgency, type AmmoUrgency } from "./ammo";
 import {
   EnemyInstance,
   TowerInstance,
@@ -40,6 +40,14 @@ export interface DamagePopup {
   isCrit: boolean;
 }
 
+/** 弹药在某个塔上耗尽、自动回退默认弹药的事件，供渲染层触发"掉级"提示动画 */
+export interface AmmoDepletionEvent {
+  slotIndex: number;
+  towerId: number;
+  x: number;
+  y: number;
+}
+
 /**
  * 纯逻辑游戏会话控制器：不依赖 Phaser，驱动整局塔防+合成流程。
  * Phaser 场景只负责渲染这个对象的状态与转发玩家输入；
@@ -68,6 +76,8 @@ export class GameSession {
   private rng: Rng;
   /** 最近一帧产生的伤害飘字，供渲染层消费后可清空 */
   lastDamagePopups: DamagePopup[] = [];
+  /** 最近一帧发生的"弹药耗尽→回退默认弹药"事件，供渲染层触发提示动画后可清空 */
+  lastAmmoDepletions: AmmoDepletionEvent[] = [];
 
   constructor(level: LevelDef = LEVEL_1, rng: Rng = Math.random) {
     this.level = level;
@@ -137,6 +147,7 @@ export class GameSession {
     }
     ammo.load();
     tower.loadedAmmo = ammo;
+    tower.everLoadedAmmo = true;
   }
 
   unloadAmmoToRack(slotIndex: number): boolean {
@@ -165,6 +176,7 @@ export class GameSession {
   /** 主更新循环：推进敌人/炮塔/波次状态。deltaSeconds 建议 <= 0.1 以保证移动精度 */
   update(deltaSeconds: number): void {
     this.lastDamagePopups = [];
+    this.lastAmmoDepletions = [];
     if (this.phase !== "battle") return;
 
     this.updateSpawns(deltaSeconds);
@@ -216,16 +228,17 @@ export class GameSession {
   }
 
   private updateTowers(dt: number): void {
-    for (const tower of this.towers) {
-      if (!tower) continue;
+    this.towers.forEach((tower, slotIndex) => {
+      if (!tower) return;
       tower.tickCooldown(dt);
       tower.loadedAmmo?.tick(dt);
       if (tower.loadedAmmo?.isDepleted()) {
+        this.recordAmmoDepletion(tower, slotIndex);
         tower.loadedAmmo = null;
       }
-      if (!tower.canFire()) continue;
+      if (!tower.canFire()) return;
       const target = findTarget(tower, this.enemies);
-      if (!target) continue;
+      if (!target) return;
       const outcome = fireTower(tower, target, this.enemies, this.rng);
       if (outcome) {
         this.lastDamagePopups.push({
@@ -236,9 +249,20 @@ export class GameSession {
         });
       }
       if (tower.loadedAmmo?.isDepleted()) {
+        this.recordAmmoDepletion(tower, slotIndex);
         tower.loadedAmmo = null;
       }
-    }
+    });
+  }
+
+  /** 弹药耗尽会自动回退为塔身自带的默认弹药（基础伤害，无特效），保证炮塔不会完全哑火 */
+  private recordAmmoDepletion(tower: TowerInstance, slotIndex: number): void {
+    this.lastAmmoDepletions.push({
+      slotIndex,
+      towerId: tower.id,
+      x: tower.position.x,
+      y: tower.position.y,
+    });
   }
 
   private checkWaveClear(): void {
@@ -252,5 +276,16 @@ export class GameSession {
         this.phase = "prep";
       }
     }
+  }
+
+  /** 汇总当前所有"弹药告急"（warning/critical）的塔位，供 HUD 警示图标与位置提示使用 */
+  getAmmoWarnings(): { slotIndex: number; urgency: AmmoUrgency }[] {
+    const warnings: { slotIndex: number; urgency: AmmoUrgency }[] = [];
+    this.towers.forEach((tower, slotIndex) => {
+      if (!tower) return;
+      const urgency = getAmmoUrgency(tower.loadedAmmo);
+      if (urgency !== "ok") warnings.push({ slotIndex, urgency });
+    });
+    return warnings;
   }
 }

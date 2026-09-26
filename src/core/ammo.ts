@@ -81,6 +81,27 @@ export function createAmmoInstance(craftResult: CraftResult): AmmoInstance {
   return new AmmoInstance(craftResult);
 }
 
+/** 弹药剩余量的可视化警示等级：ok(充足) / warning(≤30%,建议补货) / critical(≤10%,即将耗尽) */
+export type AmmoUrgency = "ok" | "warning" | "critical";
+
+export const AMMO_WARNING_THRESHOLD = 0.3;
+export const AMMO_CRITICAL_THRESHOLD = 0.1;
+
+/**
+ * 计算一件已装填弹药的剩余量警示等级。永久弹药、未装填、非临时弹药都视为 "ok"（无需提醒）。
+ * 剩余比例取"剩余时间占比"与"剩余次数占比"中较小者，任一先耗尽都算作紧迫状态。
+ */
+export function getAmmoUrgency(ammo: AmmoInstance | null): AmmoUrgency {
+  if (!ammo || ammo.isPermanent || ammo.status !== "loaded") return "ok";
+  const pct = Math.min(
+    ammo.remainingSeconds / TEMP_AMMO_DURATION_SECONDS,
+    ammo.remainingShots / TEMP_AMMO_MAX_SHOTS,
+  );
+  if (pct <= AMMO_CRITICAL_THRESHOLD) return "critical";
+  if (pct <= AMMO_WARNING_THRESHOLD) return "warning";
+  return "ok";
+}
+
 export const AMMO_RACK_CAPACITY = 8;
 
 export class AmmoRackFullError extends Error {}
