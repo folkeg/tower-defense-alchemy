@@ -7,7 +7,7 @@ import { RecipeJournal, MIN_MATERIALS_PER_CRAFT, MAX_MATERIALS_PER_CRAFT } from 
 import { TOWERS, type TowerKind } from "../config/towers";
 import { ENEMY_PATH, TOWER_SLOTS, GAME_WIDTH, GAME_HEIGHT, HUD_HEIGHT, RACK_PANEL_X, RACK_PANEL_WIDTH } from "../config/map";
 import { LEVEL_1 } from "../config/waves";
-import { AMMO_RACK_CAPACITY } from "../core/ammo";
+import { AMMO_RACK_CAPACITY, getAmmoUrgency, TEMP_AMMO_DURATION_SECONDS, TEMP_AMMO_MAX_SHOTS } from "../core/ammo";
 
 const PANEL_BG = 0x14141f;
 const PANEL_BORDER = 0x3a3a55;
@@ -50,6 +50,7 @@ export class GameScene extends Phaser.Scene {
   private hudWaveText!: Phaser.GameObjects.Text;
   private hudPhaseText!: Phaser.GameObjects.Text;
   private hudCountdownText!: Phaser.GameObjects.Text;
+  private hudAmmoWarningText!: Phaser.GameObjects.Text;
   private nextWaveButton!: ButtonHandle;
 
   private rackContainer!: Phaser.GameObjects.Container;
@@ -109,6 +110,7 @@ export class GameScene extends Phaser.Scene {
     this.syncTowers();
     this.refreshHud();
     this.showDamagePopups();
+    this.showAmmoDepletionEffects();
 
     if ((this.session.phase === "game_over" || this.session.phase === "level_complete") && !this.resultShown) {
       this.resultShown = true;
@@ -194,16 +196,15 @@ export class GameScene extends Phaser.Scene {
         if (!ammo.isPermanent) {
           const pct = Math.max(
             0,
-            Math.min(
-              1,
-              Math.min(
-                ammo.remainingSeconds / 30,
-                ammo.remainingShots / 50,
-              ),
-            ),
+            Math.min(1, Math.min(ammo.remainingSeconds / TEMP_AMMO_DURATION_SECONDS, ammo.remainingShots / TEMP_AMMO_MAX_SHOTS)),
           );
+          const urgency = getAmmoUrgency(ammo);
+          // 弹药剩余量警示色：充足=绿, 告警(≤30%)=黄, 危急(≤10%)=红+闪烁，
+          // 让玩家管理多个塔时能一眼分辨哪个塔最需要立刻补弹（类似 Overcooked 的计时提醒）。
+          const ringColor = urgency === "critical" ? 0xff4d4d : urgency === "warning" ? 0xffd24d : 0x54e26a;
+          const ringAlpha = urgency === "critical" ? 0.55 + 0.45 * Math.sin(this.time.now / 130) : 0.9;
           const ring = this.add.graphics();
-          ring.lineStyle(4, 0xffffff, 0.9);
+          ring.lineStyle(4, ringColor, ringAlpha);
           ring.beginPath();
           ring.arc(0, 0, 22, -Math.PI / 2, -Math.PI / 2 + pct * Math.PI * 2, false);
           ring.strokePath();
@@ -212,6 +213,11 @@ export class GameScene extends Phaser.Scene {
           const badge = this.add.circle(18, -18, 6, 0xffd24d, 1);
           container.add(badge);
         }
+      } else if (tower.everLoadedAmmo) {
+        // 曾经装填过弹药、现已耗尽回退默认弹药：用灰色描边角标提示"已掉级"，
+        // 与"从未装填过"的裸塔区分开，提醒玩家这里输出已经下降，值得重新装填。
+        const badge = this.add.circle(18, -18, 6, 0x8888aa, 1).setStrokeStyle(1, 0xffffff, 0.6);
+        container.add(badge);
       }
 
       // 显示射程圈（半透明，帮助玩家判断覆盖范围）
@@ -286,6 +292,57 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * 弹药耗尽、回退默认弹药的那一刻做一次醒目的一次性反馈：
+   * 一个从塔身向外扩散并淡出的红色冲击圈 + 一句浮动提示文字，
+   * 让玩家能立刻注意到"这个塔配置刚刚掉级了"，而不是要靠持续盯着倒计时圈才发现。
+   */
+  private showAmmoDepletionEffects(): void {
+    for (const evt of this.session.lastAmmoDepletions) {
+      const burst = this.add.circle(evt.x, evt.y, 18, 0xff4d4d, 0.5).setStrokeStyle(2, 0xff4d4d, 0.9);
+      this.tweens.add({
+        targets: burst,
+        radius: 42,
+        alpha: 0,
+        duration: 500,
+        onUpdate: () => burst.setStrokeStyle(2, 0xff4d4d, burst.alpha),
+        onComplete: () => burst.destroy(),
+      });
+      const text = this.add
+        .text(evt.x, evt.y - 40, "弹药耗尽!已切换默认弹药", { fontSize: "11px", color: "#ff8a8a" })
+        .setOrigin(0.5);
+      this.tweens.add({
+        targets: text,
+        y: evt.y - 62,
+        alpha: 0,
+        duration: 1400,
+        delay: 300,
+        onComplete: () => text.destroy(),
+      });
+    }
+  }
+
+  /**
+   * HUD"弹药告急"提示被点击时，对所有当前处于 warning/critical 的塔位做一次
+   * 醒目的定位高亮（当前地图单屏可见，无需摄像机滚动，直接在原地脉冲高亮即可）。
+   */
+  private highlightAmmoWarnings(): void {
+    for (const warning of this.session.getAmmoWarnings()) {
+      const pos = TOWER_SLOTS[warning.slotIndex];
+      const color = warning.urgency === "critical" ? 0xff4d4d : 0xffd24d;
+      const highlight = this.add.circle(pos.x, pos.y, 30, color, 0).setStrokeStyle(3, color, 1).setDepth(50);
+      this.tweens.add({
+        targets: highlight,
+        radius: 60,
+        alpha: 0,
+        duration: 550,
+        repeat: 2,
+        onUpdate: () => highlight.setStrokeStyle(3, color, Math.max(0, 1 - highlight.radius / 60)),
+        onComplete: () => highlight.destroy(),
+      });
+    }
+  }
+
   // -------------------------------------------------------------------------
   // HUD（顶部信息条 + 下一波按钮）
   // -------------------------------------------------------------------------
@@ -299,6 +356,9 @@ export class GameScene extends Phaser.Scene {
     this.hudGoldText = this.add.text(260, 14, "", { fontSize: "16px", color: "#ffd24d" });
     this.hudPhaseText = this.add.text(360, 14, "", { fontSize: "14px", color: MUTED_COLOR });
     this.hudCountdownText = this.add.text(460, 14, "", { fontSize: "13px", color: "#ffd24d" });
+    this.hudAmmoWarningText = this.add.text(460, 14, "", { fontSize: "13px", color: "#ff4d4d" });
+    this.hudAmmoWarningText.setInteractive({ useHandCursor: true });
+    this.hudAmmoWarningText.on("pointerdown", () => this.highlightAmmoWarnings());
 
     this.createTopButton(GAME_WIDTH - 380, "商店", () => this.togglePanel(this.shopPanel));
     this.createTopButton(GAME_WIDTH - 290, "熔炉", () => this.togglePanel(this.furnacePanel));
@@ -414,8 +474,26 @@ export class GameScene extends Phaser.Scene {
       this.hudCountdownText.setText(
         remaining > 0 ? `建议备战 ${Math.ceil(remaining)}s（可随时开始）` : "随时可开始下一波",
       );
+      this.hudAmmoWarningText.setText("");
+      this.hudAmmoWarningText.disableInteractive();
     } else {
       this.hudCountdownText.setText("");
+      const warnings = this.session.getAmmoWarnings();
+      if (warnings.length === 0) {
+        this.hudAmmoWarningText.setText("");
+        this.hudAmmoWarningText.disableInteractive();
+      } else {
+        const criticalCount = warnings.filter((w) => w.urgency === "critical").length;
+        const blink = criticalCount > 0 ? Math.sin(this.time.now / 130) > 0 : true;
+        this.hudAmmoWarningText.setColor(criticalCount > 0 ? "#ff4d4d" : "#ffd24d");
+        this.hudAmmoWarningText.setAlpha(blink ? 1 : 0.35);
+        this.hudAmmoWarningText.setText(
+          criticalCount > 0
+            ? `⚠ 弹药即将耗尽 x${criticalCount}（点击定位）`
+            : `⚠ 弹药偏低 x${warnings.length}（点击定位）`,
+        );
+        this.hudAmmoWarningText.setInteractive({ useHandCursor: true });
+      }
     }
   }
 

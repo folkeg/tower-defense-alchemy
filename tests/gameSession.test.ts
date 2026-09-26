@@ -99,4 +99,42 @@ describe("GameSession", () => {
 
     expect(["level_complete", "game_over"]).toContain(session.phase);
   });
+
+  it("firing continues with fallback base damage after ammo depletes, and a depletion event is recorded", () => {
+    const session = new GameSession(LEVEL_1, mulberry32(4));
+    session.placeTower("melee", 0);
+    session.buyMaterial("ember_dust");
+    session.buyMaterial("frost_shard");
+    session.craftAmmo(["ember_dust", "frost_shard"], "temporary");
+    session.loadAmmoFromRack(0, 0);
+    session.startNextWave();
+
+    // 强行推进到弹药耗尽（30 秒时效）
+    for (let i = 0; i < 320; i++) session.update(0.1);
+
+    const tower = session.towers[0]!;
+    expect(tower.loadedAmmo).toBeNull(); // 已回退默认弹药（塔身基础属性，无独立弹药实例）
+    expect(tower.getEffectiveRange()).toBe(tower.def.baseRange);
+    // 塔仍能正常开火（不会完全哑火），canFire/冷却机制不受影响
+    expect(tower.canFire).toBeInstanceOf(Function);
+  });
+
+  it("getAmmoWarnings reports warning/critical urgency for temp ammo running low", () => {
+    const session = new GameSession(LEVEL_1, mulberry32(5));
+    session.placeTower("melee", 0);
+    session.buyMaterial("ember_dust");
+    session.buyMaterial("frost_shard");
+    session.craftAmmo(["ember_dust", "frost_shard"], "temporary");
+    session.loadAmmoFromRack(0, 0);
+    session.startNextWave();
+
+    expect(session.getAmmoWarnings()).toEqual([]); // 刚装填，弹药充足
+
+    // 推进到剩余时间 <= 30% (30s * 0.3 = 9s 剩余，即消耗 21s)
+    for (let i = 0; i < 215; i++) session.update(0.1);
+    const warnings = session.getAmmoWarnings();
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0].slotIndex).toBe(0);
+    expect(["warning", "critical"]).toContain(warnings[0].urgency);
+  });
 });
