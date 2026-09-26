@@ -9,7 +9,7 @@
 
 ## 🎮 在线试玩
 
-推送到 `main` 分支后，GitHub Actions 会自动构建并发布到 GitHub Pages：
+推送到默认分支（本仓库当前为 `master`，工作流同时兼容 `main`）后，GitHub Actions 会自动构建并发布到 GitHub Pages：
 
 ```
 https://folkeg.github.io/tower-defense-alchemy/
@@ -128,7 +128,7 @@ npm run preview   # 预览生产构建
 
 ## 部署流程说明
 
-`.github/workflows/deploy.yml` 会在每次推送到 `main` 分支时：
+`.github/workflows/deploy.yml` 会在每次推送到 `main` 或 `master` 分支时：
 1. 安装依赖、跑 `vitest`、跑 `tsc --noEmit`；
 2. `npm run build` 生成 `dist/`（`vite.config.ts` 在 CI 环境下自动使用
    `base: '/tower-defense-alchemy/'` 以匹配 GitHub Pages 的子路径）；
