@@ -46,7 +46,10 @@ export const TOWERS: Record<TowerKind, TowerDef> = {
     kind: "melee",
     name: "近程速射塔",
     cost: 40,
-    baseRange: 110,
+    // 注：该值需要覆盖 map.ts 中所有 TOWER_SLOTS 到 ENEMY_PATH 的最大最近距离
+    // （目前实测最远格约 120px），否则会出现"塔建在某些格子上几乎打不到任何敌人"的死区 bug，
+    // 见 2026-09 复盘：110px 曾与 1 号格恰好相切、8 号格完全超出射程，导致弹药消耗却零击杀。
+    baseRange: 135,
     baseAttackInterval: 0.6,
     baseDamage: 8,
     splashRadius: 0,

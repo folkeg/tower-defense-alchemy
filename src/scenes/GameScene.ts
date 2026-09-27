@@ -84,6 +84,9 @@ export class GameScene extends Phaser.Scene {
     this.prepPhaseStartedAtMs = this.time.now;
     this.cameras.main.setBackgroundColor("#0a0a12");
 
+    // 仅用于 Playwright 冒烟测试/手动调试读取战斗数据（金币、击杀数等），不影响正常游玩逻辑。
+    (window as unknown as { __debugSession?: GameSession }).__debugSession = this.session;
+
     this.drawMap();
     this.createTowerSlots();
     this.createHud();
