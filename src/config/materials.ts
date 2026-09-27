@@ -3,7 +3,15 @@
  * 属性向量用于合成时按配方规则加权计算结果数值区间。
  */
 
-export type MaterialTag = "fire" | "ice" | "explosive" | "poison" | "rare";
+/**
+ * 素材标签体系分两条线，不要混为一谈：
+ * - 法系（fire / ice / explosive / poison）：与元素/特效强绑定，决定灼烧/减速/中毒等状态效果。
+ * - 物理系（physical）：另起一条独立的线，不是"第五种法系"。物理系素材不追求元素特效花样，
+ *   核心卖点是高伤害穿透 + 独有的"击退/硬直"控制手段（区别于法系的减速/中毒）。
+ * - rare 不参与类型判定，只作为"稀有增幅"标记叠加在上述任一条线上。
+ * 详见 towers.ts 顶部注释与 README「设计理念」章节的"塔与弹药契合加成"说明。
+ */
+export type MaterialTag = "fire" | "ice" | "explosive" | "poison" | "physical" | "rare";
 
 export interface AttributeVector {
   /** 基础伤害贡献 */
@@ -84,6 +92,24 @@ export const MATERIALS: MaterialDef[] = [
     vector: { damage: 6, rate: -0.05, range: 15, potency: 0.55 },
     description: "进阶冰系素材，强化减速与范围。",
     dropWeight: 2,
+  },
+  {
+    id: "iron_shrapnel",
+    name: "破甲铁砂",
+    tag: "physical",
+    shopPrice: 12,
+    vector: { damage: 8, rate: 0, range: 0, potency: 0.1 },
+    description: "基础物理系素材，高伤害穿透护甲，特效倾向低（对标火种粉的物理系定位）。",
+    dropWeight: 6,
+  },
+  {
+    id: "impact_core",
+    name: "冲击核心",
+    tag: "physical",
+    shopPrice: 14,
+    vector: { damage: 3, rate: -0.05, range: 0, potency: 0.6 },
+    description: "基础物理系素材，伤害较低但附带强力的击退/硬直倾向，是物理系独有的控制手段。",
+    dropWeight: 5,
   },
   {
     id: "starfall_shard",

@@ -1,7 +1,7 @@
 import type { EnemyDef } from "../config/enemies";
 import type { TowerDef } from "../config/towers";
 import type { Point } from "../config/map";
-import type { AmmoInstance } from "./ammo";
+import { getAmmoVisualShape, type AmmoInstance, type AmmoVisualShape } from "./ammo";
 import type { Rng } from "./craftingEngine";
 import type { EffectKind } from "../config/recipes";
 
@@ -10,10 +10,11 @@ import type { EffectKind } from "../config/recipes";
 // ---------------------------------------------------------------------------
 
 export interface StatusEffectState {
-  kind: "burn" | "poison" | "slow";
+  /** stun 是物理系独有的"击退/硬直"控制手段，实现上复用减速系数（接近满速降为 0）+短时长 */
+  kind: "burn" | "poison" | "slow" | "stun";
   /** 每秒伤害（仅 burn/poison 生效） */
   dps: number;
-  /** 减速系数 0-1，代表降低的速度比例（仅 slow 生效） */
+  /** 减速系数 0-1，代表降低的速度比例（仅 slow/stun 生效） */
   slowFactor: number;
   remainingSeconds: number;
 }
@@ -46,9 +47,9 @@ export class EnemyInstance {
     return this.hp > 0;
   }
 
-  /** 当前有效移动速度（受减速效果叠加影响，取最强减速） */
+  /** 当前有效移动速度（受减速/硬直效果叠加影响，取最强的一个） */
   getEffectiveSpeed(): number {
-    const slow = this.effects.filter((e) => e.kind === "slow");
+    const slow = this.effects.filter((e) => e.kind === "slow" || e.kind === "stun");
     if (slow.length === 0) return this.def.speed;
     const strongest = Math.max(...slow.map((e) => e.slowFactor));
     return this.def.speed * (1 - strongest);
@@ -121,6 +122,9 @@ const EFFECT_DURATION: Record<Exclude<EffectKind, "none" | "shock">, number> = {
   burn: 3,
   poison: 4,
   slow: 2,
+  /** 硬直/击退时长刻意很短——物理系的控制手段是"打断节奏"而非"长时间冻结"，
+   *  与法系的减速定位区分开（见 towers.ts/materials.ts 顶部注释）。 */
+  stun: 0.8,
 };
 
 /** 根据弹药特效类型，为目标敌人施加对应的状态效果（shock/none 不产生持续效果） */
@@ -144,6 +148,15 @@ export function applyAmmoEffect(
       slowFactor: Math.min(0.75, 0.2 + potency * 0.4),
       remainingSeconds: EFFECT_DURATION.slow,
     });
+  } else if (effect === "stun") {
+    // 物理系独有的击退/硬直：接近完全定身（最高 95%），但持续时间短，靠"打断走位节奏"制造价值，
+    // 而不是像法系减速那样长时间大幅拖慢。potency 越高（如冲击核心）硬直效果越强。
+    enemy.effects.push({
+      kind: "stun",
+      dps: 0,
+      slowFactor: Math.min(0.95, 0.6 + potency * 0.35),
+      remainingSeconds: EFFECT_DURATION.stun,
+    });
   }
   // "shock"/"none" 不附加额外的持续状态，其收益已体现在暴击率上
 }
@@ -156,12 +169,32 @@ export interface FireOutcome {
   targetId: number;
   damageDealt: number;
   isCrit: boolean;
+  /** 是否触发了塔与弹药的"契合加成"（见 towers.ts 顶部注释），供渲染层区分命中数字样式 */
+  isAffinityBonus: boolean;
+  /** 本次开火弹药的颜色/形状（用于飞行弹药视觉，未装填弹药时回退为塔身颜色+圆形） */
+  ammoColor: number;
+  ammoShape: AmmoVisualShape;
   splashHits: { targetId: number; damageDealt: number }[];
 }
 
 let nextTowerId = 1;
 export function resetTowerIdCounter(): void {
   nextTowerId = 1;
+}
+
+/** 弹药契合塔的固定伤害加成比例（见 towers.ts 顶部"契合加成"说明），当前取 +18% */
+export const AFFINITY_DAMAGE_BONUS = 0.18;
+
+/** 弹药配方是否属于"物理系"——recipeKey 固定为 "physical"，其余配方（含 fire/ice/explosive/poison 及组合）都归为法系 */
+export function isPhysicalRecipeKey(recipeKey: string): boolean {
+  return recipeKey === "physical";
+}
+
+/** 判断塔的 affinity 与已装填弹药的配方是否"契合"；未装填弹药视为不契合 */
+export function isAffinityMatch(tower: TowerInstance, ammo: AmmoInstance | null): boolean {
+  if (!ammo) return false;
+  const ammoIsPhysical = isPhysicalRecipeKey(ammo.craftResult.recipeKey);
+  return tower.def.affinity === (ammoIsPhysical ? "physical" : "magic");
 }
 
 export class TowerInstance {
@@ -227,7 +260,9 @@ export function fireTower(
   const baseDamage = ammo?.craftResult.finalDamage ?? tower.def.baseDamage;
   const critChance = ammo?.craftResult.finalCritChance ?? 0;
   const isCrit = rng() * 100 < critChance;
-  const rawDamage = isCrit ? baseDamage * 2 : baseDamage;
+  const isAffinityBonus = isAffinityMatch(tower, ammo);
+  let rawDamage = isCrit ? baseDamage * 2 : baseDamage;
+  if (isAffinityBonus) rawDamage *= 1 + AFFINITY_DAMAGE_BONUS;
 
   const dealtToTarget = applyDamageToEnemy(target, rawDamage);
   if (ammo) {
@@ -254,7 +289,15 @@ export function fireTower(
   ammo?.registerShot();
   tower.cooldownRemaining = tower.getEffectiveInterval();
 
-  return { targetId: target.id, damageDealt: dealtToTarget, isCrit, splashHits };
+  return {
+    targetId: target.id,
+    damageDealt: dealtToTarget,
+    isCrit,
+    isAffinityBonus,
+    ammoColor: ammo?.craftResult.color ?? tower.def.color,
+    ammoShape: getAmmoVisualShape(ammo?.craftResult),
+    splashHits,
+  };
 }
 
 function applyDamageToEnemy(enemy: EnemyInstance, rawDamage: number): number {

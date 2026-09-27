@@ -13,6 +13,8 @@ const fire2 = getMaterialById("salamander_core");
 const ice = getMaterialById("frost_shard");
 const explosive = getMaterialById("blast_powder");
 const rare = getMaterialById("starfall_shard");
+const ironShrapnel = getMaterialById("iron_shrapnel");
+const impactCore = getMaterialById("impact_core");
 
 describe("buildRecipeKey", () => {
   it("uses the single dominant tag when only one tag is present", () => {
@@ -64,6 +66,14 @@ describe("predictCraft", () => {
     const withoutRare = predictCraft([fire, ice]);
     const withRare = predictCraft([fire, ice, rare]);
     expect(withRare.greatSuccessChance).toBeGreaterThan(withoutRare.greatSuccessChance);
+  });
+
+  it("physical materials resolve to the dedicated physical recipe (stun effect, not a 5th element)", () => {
+    const prediction = predictCraft([ironShrapnel, impactCore]);
+    expect(prediction.recipeKey).toBe("physical");
+    expect(prediction.resultName).toBe("破甲弹");
+    expect(prediction.isAoe).toBe(false);
+    expect(prediction.effect).toBe("stun");
   });
 });
 

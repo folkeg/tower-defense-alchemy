@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { GameSession } from "../core/gameSession";
-import type { EnemyInstance } from "../core/combat";
+import { isAffinityMatch, type EnemyInstance } from "../core/combat";
 import { AmmoInstance } from "../core/ammo";
 import { SHOP_MATERIALS, getMaterialById, type MaterialDef } from "../config/materials";
 import { RecipeJournal, MIN_MATERIALS_PER_CRAFT, MAX_MATERIALS_PER_CRAFT } from "../core/craftingEngine";
@@ -124,6 +124,11 @@ export class GameScene extends Phaser.Scene {
     this.lastPhase = "prep";
     this.prepPhaseStartedAtMs = this.time.now;
     this.cameras.main.setBackgroundColor("#0a0a12");
+    // 教程未完成时，第一波战斗的前两个击杀强制掉落 1 个物理系+1 个法系素材（不影响正常随机掉落），
+    // 用于让教程扩展步骤（契合加成演示/对比）不依赖随机数即可稳定复现。见 gameSession.ts 字段注释。
+    if (!this.isTutorialCompleted()) {
+      this.session.tutorialForcedDrops = ["iron_shrapnel", "ember_dust"];
+    }
 
     // 仅用于 Playwright 冒烟测试/手动调试读取战斗数据（金币、击杀数等），不影响正常游玩逻辑。
     (window as unknown as { __debugSession?: GameSession }).__debugSession = this.session;
@@ -133,6 +138,10 @@ export class GameScene extends Phaser.Scene {
       stepIndex: this.tutorialStepIndex,
       totalSteps: this.tutorialSteps.length,
     });
+    // 同上，仅供自动化测试读取当前教程高亮区域的绝对像素中心点（用于计算点击坐标），
+    // 因为熔炉芯片/商店按钮的下标会随玩家持有素材动态变化，硬编码坐标非常脆弱。
+    (window as unknown as { __tutorialHoleCenters?: () => { x: number; y: number }[] }).__tutorialHoleCenters = () =>
+      this.tutorialHoleRects.map((r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 }));
 
     this.drawMap();
     this.createTowerSlots();
@@ -162,6 +171,8 @@ export class GameScene extends Phaser.Scene {
     this.refreshHud();
     this.showDamagePopups();
     this.showAmmoDepletionEffects();
+    this.showFireProjectiles();
+    this.showMaterialDropPopups();
 
     if ((this.session.phase === "game_over" || this.session.phase === "level_complete") && !this.resultShown) {
       this.resultShown = true;
@@ -245,6 +256,15 @@ export class GameScene extends Phaser.Scene {
         .setOrigin(0.5);
       container.add(label);
 
+      // "契合中"持续提示：装填的弹药一旦与塔的 affinity 匹配，从装填那一刻起就持续显示
+      // 金色描边光环（不需要等到命中），让玩家换弹药时能立刻看到反馈做决策。
+      if (isAffinityMatch(tower, tower.loadedAmmo)) {
+        const pulse = 0.6 + 0.4 * Math.sin(this.time.now / 180);
+        const halo = this.add.circle(0, 0, 24, 0xffd24d, 0).setStrokeStyle(3, 0xffd24d, pulse);
+        container.addAt(halo, 1);
+        body.setStrokeStyle(3, 0xffd24d, 1);
+      }
+
       if (tower.loadedAmmo) {
         const ammo = tower.loadedAmmo;
         if (!ammo.isPermanent) {
@@ -326,10 +346,16 @@ export class GameScene extends Phaser.Scene {
 
   private showDamagePopups(): void {
     for (const popup of this.session.lastDamagePopups) {
+      // 契合加成命中：数字变金色+字号更大，跟普通白色/暴击黄色明显区分，
+      // 让玩家换弹药时能立刻从命中数字上确认"契合确实生效了"。
+      const prefix = popup.isAffinityBonus ? "契合! " : popup.isCrit ? "暴击! " : "";
+      const fontSize = popup.isAffinityBonus ? "19px" : popup.isCrit ? "16px" : "12px";
+      const color = popup.isAffinityBonus ? "#ffd24d" : popup.isCrit ? "#ffd24d" : "#ffffff";
       const text = this.add
-        .text(popup.x, popup.y - 20, `${popup.isCrit ? "暴击! " : ""}-${Math.round(popup.amount)}`, {
-          fontSize: popup.isCrit ? "16px" : "12px",
-          color: popup.isCrit ? "#ffd24d" : "#ffffff",
+        .text(popup.x, popup.y - 20, `${prefix}-${Math.round(popup.amount)}`, {
+          fontSize,
+          color,
+          fontStyle: popup.isAffinityBonus ? "bold" : "normal",
         })
         .setOrigin(0.5);
       this.popupTexts.push(text);
@@ -342,6 +368,55 @@ export class GameScene extends Phaser.Scene {
           text.destroy();
           this.popupTexts = this.popupTexts.filter((t) => t !== text);
         },
+      });
+    }
+  }
+
+  /**
+   * 每次开火生成一个短暂飞行的弹药视觉物体（塔位置→命中位置），纯视觉反馈，
+   * 伤害已经在 session.update() 里瞬时结算完毕，这里只是让"打出去了"这件事可见。
+   * 飞行时长刻意很短（110ms），避免拖慢近程速射塔 0.6s 的攻击节奏观感。
+   */
+  private showFireProjectiles(): void {
+    const FLIGHT_DURATION_MS = 110;
+    for (const evt of this.session.lastFireEvents) {
+      let projectile: Phaser.GameObjects.Shape;
+      if (evt.shape === "diamond") {
+        projectile = this.add
+          .rectangle(evt.fromX, evt.fromY, 8, 8, evt.color, 1)
+          .setAngle(45)
+          .setDepth(40);
+      } else if (evt.shape === "line") {
+        const angle = Phaser.Math.Angle.Between(evt.fromX, evt.fromY, evt.toX, evt.toY);
+        projectile = this.add
+          .rectangle(evt.fromX, evt.fromY, 12, 3, evt.color, 1)
+          .setRotation(angle)
+          .setDepth(40);
+      } else {
+        projectile = this.add.circle(evt.fromX, evt.fromY, 4, evt.color, 1).setDepth(40);
+      }
+      this.tweens.add({
+        targets: projectile,
+        x: evt.toX,
+        y: evt.toY,
+        duration: FLIGHT_DURATION_MS,
+        onComplete: () => projectile.destroy(),
+      });
+    }
+  }
+
+  /** 击杀掉落素材时的轻量浮动提示（"+素材名"），帮助玩家在战斗中注意到掉落，也服务于教程的观察类步骤 */
+  private showMaterialDropPopups(): void {
+    for (const drop of this.session.lastMaterialDrops) {
+      const text = this.add
+        .text(drop.x, drop.y + 18, `+${drop.materialName}`, { fontSize: "11px", color: "#7cff9a" })
+        .setOrigin(0.5);
+      this.tweens.add({
+        targets: text,
+        y: drop.y + 42,
+        alpha: 0,
+        duration: 1000,
+        onComplete: () => text.destroy(),
       });
     }
   }
@@ -788,6 +863,8 @@ export class GameScene extends Phaser.Scene {
         return 0xffb545;
       case "poison":
         return 0x7cff6a;
+      case "physical":
+        return 0xb8b8c8;
       case "rare":
         return 0xc86aff;
       default:
@@ -1242,15 +1319,17 @@ export class GameScene extends Phaser.Scene {
   //    而不是固定计时器，因为引导是在玩家真实的第一局游戏中进行，不是模拟环境。
   // -------------------------------------------------------------------------
 
-  private maybeStartTutorial(): void {
-    let completed = false;
+  private isTutorialCompleted(): boolean {
     try {
-      completed = window.localStorage.getItem(GameScene.TUTORIAL_STORAGE_KEY) === "1";
+      return window.localStorage.getItem(GameScene.TUTORIAL_STORAGE_KEY) === "1";
     } catch {
-      // 隐私模式/localStorage 不可用时，保守地不强制弹出引导，避免报错阻断游戏。
-      completed = true;
+      // 隐私模式/localStorage 不可用时，保守地当作"已完成"，避免报错阻断游戏或反复强制弹出引导。
+      return true;
     }
-    if (!completed) this.startTutorial();
+  }
+
+  private maybeStartTutorial(): void {
+    if (!this.isTutorialCompleted()) this.startTutorial();
   }
 
   /** 把一个（可能是嵌套对象的）矩形边界外扩几个像素，作为高亮/打洞区域，视觉上更宽松一点。 */
@@ -1268,6 +1347,31 @@ export class GameScene extends Phaser.Scene {
   ): Phaser.Geom.Rectangle[] {
     if (!obj || !obj.active) return [];
     return [this.padRect(obj.getBounds())];
+  }
+
+  /**
+   * 商店购买按钮的下标是静态的：固定跟随 SHOP_MATERIALS 数组顺序（不受是否已持有影响），
+   * 只要面板处于打开状态即可安全按此下标索引，供教程扩展步骤引用具体素材的购买按钮。
+   */
+  private shopButtonIndexFor(materialId: string): number {
+    return SHOP_MATERIALS.findIndex((m) => m.id === materialId);
+  }
+
+  /**
+   * 熔炉素材芯片的下标是动态的：只有当前持有数量 > 0 的素材才会渲染成芯片，
+   * 且顺序跟随 getOwnedMaterialIds()（=SHOP_MATERIALS 顺序 + starfall），
+   * 因此不能像商店按钮那样硬编码下标，必须每帧根据当前持有情况实时计算。
+   */
+  private furnaceChipIndexFor(materialId: string): number {
+    const ownedIds = [...SHOP_MATERIALS.map((m) => m.id), "starfall_shard"].filter(
+      (id) => this.session.wallet.getMaterialCount(id) > 0,
+    );
+    return ownedIds.indexOf(materialId);
+  }
+
+  /** 在弹药架里找到第一个 recipeKey 满足条件的弹药卡片下标，找不到返回 -1（供教程判定/高亮引用）。 */
+  private rackIndexOfRecipe(matcher: (recipeKey: string) => boolean): number {
+    return this.session.rack.getItems().findIndex((item) => item != null && matcher(item.craftResult.recipeKey));
   }
 
   private buildTutorialSteps(): TutorialStep[] {
@@ -1323,6 +1427,117 @@ export class GameScene extends Phaser.Scene {
         caption: "装填完成！点击「开始下一波」，观看炮塔自动开火作战吧。",
         getHoleRects: () => this.rectFromButton(this.nextWaveButton),
         isComplete: () => this.session.phase !== "prep",
+      },
+      // ---------------------------------------------------------------
+      // 以下为"物理系素材 + 塔弹药契合加成"扩展教程步骤。
+      // 观察类步骤（等待强制掉落）安排在 wave 1 战斗过程中触发，让玩家在真实
+      // 战斗节奏里第一次注意到"物理系/法系"这个概念，而不是等结束后才提起；
+      // 但商店购买/熔炉合成/建塔在本游戏规则里明确只允许在备战阶段进行
+      // （即 GameSession.buyMaterial/craftAmmo/placeTower 的 phase==="prep" 校验，
+      // 这是"备战/战斗分离节奏"的核心规则，教程不应该也不能绕开它），
+      // 因此这里显式插入一个"等待进入备战阶段"的过渡步骤，再继续买/合成/建塔，
+      // 避免玩家在战斗中对着高亮的购买按钮点击却毫无反应、误以为引导卡死。
+      // 装填弹药（loadAmmoFromRack）本身备战/战斗两个阶段都允许，所以最终的
+      // 契合对比装填步骤仍然可以紧跟在建塔之后，不需要再等下一次备战。
+      // ---------------------------------------------------------------
+      {
+        caption: "波次已经开始！留意战场——第一个被击杀的敌人会掉落「破甲铁砂」（物理系素材）。",
+        getHoleRects: () => [],
+        isComplete: () => this.session.wallet.getMaterialCount("iron_shrapnel") >= 1,
+      },
+      {
+        caption: '很好，物理素材到手了！继续观战——第二个敌人会掉落"火种粉"（法系素材），我们等下要用它做个对比。',
+        getHoleRects: () => [],
+        isComplete: () => this.session.wallet.getMaterialCount("ember_dust") >= 1,
+      },
+      {
+        caption: "素材先收好，这波专心防守——商店和熔炉要等回到备战阶段才能使用，我们等这波结束。",
+        getHoleRects: () => [],
+        isComplete: () => this.session.phase === "prep",
+      },
+      {
+        caption: '点击「商店」，再买 1 个"破甲铁砂"，凑够合成所需的数量。',
+        getHoleRects: () => this.rectFromButton(this.shopTopButton),
+        isComplete: () => this.shopPanel.visible,
+      },
+      {
+        caption: "点击「破甲铁砂」的购买按钮，凑够 2 个。",
+        getHoleRects: () => this.rectFromButton(this.shopButtons[this.shopButtonIndexFor("iron_shrapnel")]),
+        isComplete: () => this.session.wallet.getMaterialCount("iron_shrapnel") >= MIN_MATERIALS_PER_CRAFT,
+      },
+      {
+        caption: "凑够了！点击「熔炉」，把物理素材合成为「破甲弹」。",
+        getHoleRects: () => this.rectFromButton(this.furnaceTopButton),
+        isComplete: () => this.furnacePanel.visible,
+      },
+      {
+        caption: `点击「破甲铁砂」卡片 ${MIN_MATERIALS_PER_CRAFT} 次，选够素材用于合成。`,
+        getHoleRects: () => this.rectFromObject(this.furnaceChipHitZones[this.furnaceChipIndexFor("iron_shrapnel")]),
+        isComplete: () => this.selectedMaterials.length >= MIN_MATERIALS_PER_CRAFT,
+      },
+      {
+        caption: "点击「合成临时弹药」，破甲弹就做好了！",
+        getHoleRects: () => this.rectFromButton(this.furnaceActionButtons[0]),
+        isComplete: () => this.rackIndexOfRecipe((k) => k === "physical") !== -1,
+      },
+      {
+        caption: "点击地图上高亮的第 2 个塔位，这次建造「范围溅射塔」——它跟物理系是天生一对。",
+        getHoleRects: () => {
+          if (this.furnacePanel.visible) this.closeAllPanels();
+          return this.rectFromObject(this.towerSlotHitZones[1]);
+        },
+        isComplete: () => this.buildMenu.visible,
+      },
+      {
+        caption: "选择「范围溅射塔」完成建造。",
+        getHoleRects: () => this.rectFromButton(this.buildMenuButtons[1]),
+        isComplete: () => this.session.towers[1] !== null,
+      },
+      {
+        caption: "把刚合成的「破甲弹」拖到这座溅射塔上——契合成功时塔身会持续发出金色光环！",
+        getHoleRects: () => [
+          ...this.rectFromObject(this.rackCardBgZones[this.rackIndexOfRecipe((k) => k === "physical")]),
+          ...this.rectFromObject(this.towerSlotHitZones[1]),
+        ],
+        isComplete: () => this.session.towers[1]?.loadedAmmo?.craftResult.recipeKey === "physical",
+      },
+      {
+        caption: '光环亮了吧？现在做个对比：点击「商店」，再买 1 个"火种粉"，用刚才掉落的法系素材做把火系弹药。',
+        getHoleRects: () => this.rectFromButton(this.shopTopButton),
+        isComplete: () => this.shopPanel.visible,
+      },
+      {
+        caption: "点击「火种粉」购买按钮。",
+        getHoleRects: () => this.rectFromButton(this.shopButtons[this.shopButtonIndexFor("ember_dust")]),
+        isComplete: () => this.session.wallet.getMaterialCount("ember_dust") >= MIN_MATERIALS_PER_CRAFT,
+      },
+      {
+        caption: "点击「熔炉」，合成一发法系的「火种弹」。",
+        getHoleRects: () => this.rectFromButton(this.furnaceTopButton),
+        isComplete: () => this.furnacePanel.visible,
+      },
+      {
+        caption: `点击「火种粉」卡片 ${MIN_MATERIALS_PER_CRAFT} 次，选够素材。`,
+        getHoleRects: () => this.rectFromObject(this.furnaceChipHitZones[this.furnaceChipIndexFor("ember_dust")]),
+        isComplete: () => this.selectedMaterials.length >= MIN_MATERIALS_PER_CRAFT,
+      },
+      {
+        caption: "点击「合成临时弹药」。",
+        getHoleRects: () => this.rectFromButton(this.furnaceActionButtons[0]),
+        isComplete: () => this.rackIndexOfRecipe((k) => k === "fire") !== -1,
+      },
+      {
+        caption:
+          "最后一步：把「火种弹」（法系）拖到刚才那座溅射塔（物理系）上——注意看，金色光环消失了！" +
+          "法系弹药装在物理塔上不会契合，但依然能正常开火，只是没有额外加成。教程到此结束，接下来放手去防守吧！",
+        getHoleRects: () => {
+          if (this.furnacePanel.visible) this.closeAllPanels();
+          return [
+            ...this.rectFromObject(this.rackCardBgZones[this.rackIndexOfRecipe((k) => k === "fire")]),
+            ...this.rectFromObject(this.towerSlotHitZones[1]),
+          ];
+        },
+        isComplete: () => this.session.towers[1]?.loadedAmmo?.craftResult.recipeKey === "fire",
       },
     ];
   }

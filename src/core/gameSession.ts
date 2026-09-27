@@ -38,12 +38,32 @@ export interface DamagePopup {
   y: number;
   amount: number;
   isCrit: boolean;
+  /** 是否触发了塔与弹药的"契合加成"，渲染层据此用金色+更大字号区分普通伤害数字 */
+  isAffinityBonus: boolean;
 }
 
 /** 弹药在某个塔上耗尽、自动回退默认弹药的事件，供渲染层触发"掉级"提示动画 */
 export interface AmmoDepletionEvent {
   slotIndex: number;
   towerId: number;
+  x: number;
+  y: number;
+}
+
+/** 一次开火产生的飞行弹药视觉事件（纯视觉，伤害已经在本帧结算完毕，不受飞行时长影响） */
+export interface FireVisualEvent {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  color: number;
+  shape: "circle" | "diamond" | "line";
+}
+
+/** 击杀掉落素材事件，供渲染层弹出"+素材名"提示，也用于教程判断掉落时机 */
+export interface MaterialDropEvent {
+  materialId: string;
+  materialName: string;
   x: number;
   y: number;
 }
@@ -72,12 +92,24 @@ export class GameSession {
     greatFailureCount: 0,
   };
 
+  /**
+   * 教程专用的"强制掉落"队列：仅在 waveIndex === 0（即教程覆盖的第一波）且队列非空时生效，
+   * 每次击杀会额外、必定发放队列头部的素材（不影响原有随机掉落逻辑，两者叠加），
+   * 用于保证教程扩展步骤（物理系/法系契合对比）不依赖随机数就能演示。
+   * 由 GameScene 在教程未完成时设置；教程完成或非首波时自动不再生效。
+   */
+  tutorialForcedDrops: string[] = [];
+
   private spawnQueue: SpawnTask[] = [];
   private rng: Rng;
   /** 最近一帧产生的伤害飘字，供渲染层消费后可清空 */
   lastDamagePopups: DamagePopup[] = [];
   /** 最近一帧发生的"弹药耗尽→回退默认弹药"事件，供渲染层触发提示动画后可清空 */
   lastAmmoDepletions: AmmoDepletionEvent[] = [];
+  /** 最近一帧发生的开火飞行弹药视觉事件，供渲染层生成短暂的弹道动画 */
+  lastFireEvents: FireVisualEvent[] = [];
+  /** 最近一帧发生的素材掉落事件，供渲染层弹出提示/教程钩子判断 */
+  lastMaterialDrops: MaterialDropEvent[] = [];
 
   constructor(level: LevelDef = LEVEL_1, rng: Rng = Math.random) {
     this.level = level;
@@ -177,6 +209,8 @@ export class GameSession {
   update(deltaSeconds: number): void {
     this.lastDamagePopups = [];
     this.lastAmmoDepletions = [];
+    this.lastFireEvents = [];
+    this.lastMaterialDrops = [];
     if (this.phase !== "battle") return;
 
     this.updateSpawns(deltaSeconds);
@@ -223,8 +257,31 @@ export class GameSession {
     const reward = computeKillReward(enemy.def, this.rng);
     this.wallet.addGold(reward.gold);
     this.stats.totalGoldEarned += reward.gold;
-    if (reward.droppedMaterial) this.wallet.addMaterial(reward.droppedMaterial.id, 1);
-    if (reward.droppedRareMaterial) this.wallet.addMaterial(reward.droppedRareMaterial.id, 1);
+    if (reward.droppedMaterial) {
+      this.wallet.addMaterial(reward.droppedMaterial.id, 1);
+      this.pushMaterialDropEvent(reward.droppedMaterial.id, enemy);
+    }
+    if (reward.droppedRareMaterial) {
+      this.wallet.addMaterial(reward.droppedRareMaterial.id, 1);
+      this.pushMaterialDropEvent(reward.droppedRareMaterial.id, enemy);
+    }
+    // 教程专用强制掉落：与上面的随机掉落叠加生效，只在第一波（waveIndex === 0）且
+    // 队列非空时触发，保证教程的"物理系/法系契合对比"步骤不依赖随机数即可稳定演示。
+    if (this.waveIndex === 0 && this.tutorialForcedDrops.length > 0) {
+      const forcedId = this.tutorialForcedDrops.shift()!;
+      this.wallet.addMaterial(forcedId, 1);
+      this.pushMaterialDropEvent(forcedId, enemy);
+    }
+  }
+
+  private pushMaterialDropEvent(materialId: string, enemy: EnemyInstance): void {
+    const material = getMaterialById(materialId);
+    this.lastMaterialDrops.push({
+      materialId,
+      materialName: material.name,
+      x: enemy.position.x,
+      y: enemy.position.y,
+    });
   }
 
   private updateTowers(dt: number): void {
@@ -239,13 +296,26 @@ export class GameSession {
       if (!tower.canFire()) return;
       const target = findTarget(tower, this.enemies);
       if (!target) return;
+      const fromX = tower.position.x;
+      const fromY = tower.position.y;
+      const toX = target.position.x;
+      const toY = target.position.y;
       const outcome = fireTower(tower, target, this.enemies, this.rng);
       if (outcome) {
         this.lastDamagePopups.push({
-          x: target.position.x,
-          y: target.position.y,
+          x: toX,
+          y: toY,
           amount: outcome.damageDealt,
           isCrit: outcome.isCrit,
+          isAffinityBonus: outcome.isAffinityBonus,
+        });
+        this.lastFireEvents.push({
+          fromX,
+          fromY,
+          toX,
+          toY,
+          color: outcome.ammoColor,
+          shape: outcome.ammoShape,
         });
       }
       if (tower.loadedAmmo?.isDepleted()) {
