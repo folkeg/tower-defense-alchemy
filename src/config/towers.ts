@@ -21,8 +21,19 @@
  *
  * 塔的地形/位置策略（拐角覆盖、路径规划等）应完整保留，不要被弹药系统覆盖掉。
  * 详见 README.md「设计理念：炮塔与弹药系统分工」章节。
+ *
+ * ---------------------------------------------------------------------------
+ * 塔与弹药的"契合加成"（affinity）：
+ * 每座塔标注一个 affinity（"magic" 法系 / "physical" 物理系），弹药按其配方标签也分属
+ * 法系（fire/ice/explosive/poison 及其组合）或物理系（physical）。装填的弹药与塔的
+ * affinity 一致时视为"契合"，触发固定伤害加成（见 combat.ts 的 AFFINITY_DAMAGE_BONUS，
+ * 当前取 +18%）；不契合不是"装错完全没用"，只是没有这份额外加成，正常伤害结算。
+ * 这是一个额外的策略层，不影响弹药自身的元素/特效判定（那部分仍由弹药配方决定）。
  */
 export type TowerKind = "melee" | "splash";
+
+/** 弹药契合体系：法系对应 fire/ice/explosive/poison 及其组合配方，物理系对应 physical 配方 */
+export type TowerAffinity = "magic" | "physical";
 
 export interface TowerDef {
   kind: TowerKind;
@@ -37,6 +48,8 @@ export interface TowerDef {
   baseDamage: number;
   /** 范围溅射半径（仅 splash 塔型，实际以弹药 isAoe 为准） */
   splashRadius: number;
+  /** 弹药契合体系：法系弹药契合 magic 塔，物理系弹药契合 physical 塔，触发伤害加成 */
+  affinity: TowerAffinity;
   description: string;
   color: number;
 }
@@ -53,7 +66,8 @@ export const TOWERS: Record<TowerKind, TowerDef> = {
     baseAttackInterval: 0.6,
     baseDamage: 8,
     splashRadius: 0,
-    description: "单体目标，攻速快，适合搭配单体弹药清理落单敌人。",
+    affinity: "magic",
+    description: "单体目标，攻速快，适合搭配单体弹药清理落单敌人。装填法系弹药可触发契合加成。",
     color: 0x5a7dff,
   },
   splash: {
@@ -64,7 +78,8 @@ export const TOWERS: Record<TowerKind, TowerDef> = {
     baseAttackInterval: 1.2,
     baseDamage: 14,
     splashRadius: 50,
-    description: "攻击范围内造成溅射伤害，适合搭配AOE弹药应对密集小怪。",
+    affinity: "physical",
+    description: "攻击范围内造成溅射伤害，适合搭配AOE弹药应对密集小怪。装填物理系弹药可触发契合加成。",
     color: 0xff8a5a,
   },
 };

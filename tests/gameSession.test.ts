@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { GameSession } from "../src/core/gameSession";
 import { mulberry32 } from "../src/core/craftingEngine";
 import { LEVEL_1 } from "../src/config/waves";
-import { TOWER_SLOTS } from "../src/config/map";
+import { TOWER_SLOTS, ENEMY_PATH } from "../src/config/map";
 import type { TowerKind } from "../src/config/towers";
+import { getEnemyDef } from "../src/config/enemies";
+import { EnemyInstance } from "../src/core/combat";
 
 function runWaveToCompletion(session: GameSession, maxSeconds = 120): void {
   const dt = 0.1;
@@ -167,5 +169,51 @@ describe("GameSession", () => {
         });
       });
     });
+  });
+
+  it("tutorialForcedDrops guarantees forced material drops on successive kills, on top of normal drops", () => {
+    const session = new GameSession(LEVEL_1, mulberry32(42));
+    session.tutorialForcedDrops = ["iron_shrapnel", "ember_dust"];
+    // 直接调用私有的击杀结算钩子模拟两次连续击杀，避免与"战斗数值平衡"耦合——
+    // 这里只关心"强制掉落队列"本身的记账是否正确，命中率/伤害数值已由其他测试覆盖。
+    const killHook = (session as unknown as { onEnemyKilled: (enemy: EnemyInstance) => void })
+      .onEnemyKilled.bind(session);
+    const enemy1 = new EnemyInstance(getEnemyDef("grunt"), ENEMY_PATH);
+    const enemy2 = new EnemyInstance(getEnemyDef("grunt"), ENEMY_PATH);
+
+    killHook(enemy1);
+    expect(session.wallet.getMaterialCount("iron_shrapnel")).toBeGreaterThanOrEqual(1);
+    expect(session.tutorialForcedDrops).toEqual(["ember_dust"]);
+
+    killHook(enemy2);
+    expect(session.wallet.getMaterialCount("ember_dust")).toBeGreaterThanOrEqual(1);
+    expect(session.tutorialForcedDrops).toEqual([]);
+
+    // 队列耗尽后，后续击杀不应再受影响（不会抛错，也不会继续强制发放）
+    const enemy3 = new EnemyInstance(getEnemyDef("grunt"), ENEMY_PATH);
+    expect(() => killHook(enemy3)).not.toThrow();
+    expect(session.tutorialForcedDrops).toEqual([]);
+  });
+
+  it("lastFireEvents carries per-shot projectile visual metadata (color/shape) for rendering", () => {
+    const session = new GameSession(LEVEL_1, mulberry32(5));
+    session.placeTower("melee", 0);
+    session.startNextWave();
+
+    let sawFireEvent = false;
+    let elapsed = 0;
+    while (session.phase === "battle" && elapsed < 30 && !sawFireEvent) {
+      session.update(0.1);
+      if (session.lastFireEvents.length > 0) {
+        sawFireEvent = true;
+        const evt = session.lastFireEvents[0];
+        expect(typeof evt.color).toBe("number");
+        expect(["circle", "diamond", "line"]).toContain(evt.shape);
+        expect(evt.fromX).toBeCloseTo(TOWER_SLOTS[0].x, 0);
+        expect(evt.fromY).toBeCloseTo(TOWER_SLOTS[0].y, 0);
+      }
+      elapsed += 0.1;
+    }
+    expect(sawFireEvent).toBe(true);
   });
 });

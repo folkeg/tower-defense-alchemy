@@ -6,6 +6,7 @@ import {
   applyAmmoEffect,
   fireTower,
   findTarget,
+  isAffinityMatch,
   pathTotalLength,
   resetEnemyIdCounter,
   resetTowerIdCounter,
@@ -147,5 +148,59 @@ describe("fireTower", () => {
     const target = new EnemyInstance(ENEMIES.grunt, straightPath);
     const outcome = fireTower(tower, target, [target], mulberry32(1));
     expect(outcome!.damageDealt).toBeCloseTo(TOWERS.melee.baseDamage, 5);
+  });
+
+  it("applies the affinity bonus when ammo tag matches tower affinity", () => {
+    // melee tower affinity = "magic"；法系弹药（fire+ice 组合）应触发契合加成
+    const magicTower = new TowerInstance(TOWERS.melee, { x: 0, y: 0 });
+    const fire = getMaterialById("ember_dust");
+    const ice = getMaterialById("frost_shard");
+    const magicAmmo = new AmmoInstance(craft([fire, ice], "temporary", mulberry32(7)));
+    magicAmmo.load();
+    magicTower.loadedAmmo = magicAmmo;
+    expect(isAffinityMatch(magicTower, magicAmmo)).toBe(true);
+
+    // splash tower affinity = "physical"；同一份法系弹药装在这里应视为不契合（但仍然生效，只是没加成）
+    const physicalTower = new TowerInstance(TOWERS.splash, { x: 0, y: 0 });
+    const magicAmmo2 = new AmmoInstance(craft([fire, ice], "temporary", mulberry32(7)));
+    magicAmmo2.load();
+    physicalTower.loadedAmmo = magicAmmo2;
+    expect(isAffinityMatch(physicalTower, magicAmmo2)).toBe(false);
+
+    const targetA = new EnemyInstance(ENEMIES.grunt, straightPath);
+    const targetB = new EnemyInstance(ENEMIES.grunt, straightPath);
+    const outcomeMatched = fireTower(magicTower, targetA, [targetA], mulberry32(1));
+    const outcomeUnmatched = fireTower(physicalTower, targetB, [targetB], mulberry32(1));
+    expect(outcomeMatched!.isAffinityBonus).toBe(true);
+    expect(outcomeUnmatched!.isAffinityBonus).toBe(false);
+    // 同样的弹药/随机种子，契合命中的伤害应严格更高（体现 AFFINITY_DAMAGE_BONUS 加成）
+    expect(outcomeMatched!.damageDealt).toBeGreaterThan(outcomeUnmatched!.damageDealt);
+  });
+
+  it("physical ammo applies a stun (heavy slow) status effect on hit", () => {
+    const tower = new TowerInstance(TOWERS.splash, { x: 0, y: 0 });
+    const ironShrapnel = getMaterialById("iron_shrapnel");
+    const impactCore = getMaterialById("impact_core");
+    const physicalAmmo = new AmmoInstance(craft([ironShrapnel, impactCore], "temporary", mulberry32(9)));
+    expect(physicalAmmo.craftResult.effect).toBe("stun");
+    physicalAmmo.load();
+    tower.loadedAmmo = physicalAmmo;
+
+    const target = new EnemyInstance(ENEMIES.grunt, straightPath);
+    fireTower(tower, target, [target], mulberry32(1));
+    expect(target.effects.some((e) => e.kind === "stun")).toBe(true);
+    expect(target.getEffectiveSpeed()).toBeLessThan(target.def.speed);
+  });
+
+  it("unmatched affinity still deals normal (unboosted) damage, not zero/disabled", () => {
+    const physicalTower = new TowerInstance(TOWERS.splash, { x: 0, y: 0 });
+    const fire = getMaterialById("ember_dust");
+    const ice = getMaterialById("frost_shard");
+    const magicAmmo = new AmmoInstance(craft([fire, ice], "temporary", mulberry32(7)));
+    magicAmmo.load();
+    physicalTower.loadedAmmo = magicAmmo;
+    const target = new EnemyInstance(ENEMIES.grunt, straightPath);
+    const outcome = fireTower(physicalTower, target, [target], mulberry32(1));
+    expect(outcome!.damageDealt).toBeGreaterThan(0);
   });
 });

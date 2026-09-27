@@ -81,6 +81,20 @@ export function createAmmoInstance(craftResult: CraftResult): AmmoInstance {
   return new AmmoInstance(craftResult);
 }
 
+/**
+ * 飞行弹药的视觉外观按配方的主导标签简单区分形状（颜色统一取 craftResult.color，
+ * 已经按配方区分过），纯粹是"看得出打出去了"的轻量视觉反馈，不影响伤害判定时机。
+ */
+export type AmmoVisualShape = "circle" | "diamond" | "line";
+
+export function getAmmoVisualShape(craftResult: CraftResult | null | undefined): AmmoVisualShape {
+  if (!craftResult) return "circle";
+  const primaryTag = craftResult.recipeKey.split("+")[0];
+  if (primaryTag === "ice") return "diamond";
+  if (primaryTag === "physical") return "line";
+  return "circle";
+}
+
 /** 弹药剩余量的可视化警示等级：ok(充足) / warning(≤30%,建议补货) / critical(≤10%,即将耗尽) */
 export type AmmoUrgency = "ok" | "warning" | "critical";
 

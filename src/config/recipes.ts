@@ -10,7 +10,7 @@ import type { MaterialTag } from "./materials";
  * - 两个主导标签 -> 按字母序 join，如 "explosive+fire"
  */
 
-export type EffectKind = "burn" | "slow" | "poison" | "shock" | "none";
+export type EffectKind = "burn" | "slow" | "poison" | "shock" | "stun" | "none";
 
 export interface RecipeRule {
   key: string;
@@ -30,6 +30,16 @@ export interface RecipeRule {
 }
 
 export const RECIPE_RULES: RecipeRule[] = [
+  {
+    key: "physical",
+    resultName: "破甲弹",
+    isAoe: false,
+    effect: "stun",
+    color: 0xb8b8c8,
+    damageMultiplierRange: [1.15, 1.5],
+    critChanceRange: [5, 12],
+    description: "物理系弹药，高伤害穿透护甲，命中后短暂击退/硬直目标（物理系独有的控制手段，不与法系的减速/中毒重叠）。",
+  },
   {
     key: "fire",
     resultName: "火种弹",
