@@ -26,7 +26,7 @@ export const ENEMIES: Record<EnemyKind, EnemyDef> = {
   grunt: {
     kind: "grunt",
     name: "普通兵",
-    hp: 40,
+    hp: 55,
     speed: 60,
     armor: 0,
     goldDrop: [3, 5],
@@ -39,7 +39,7 @@ export const ENEMIES: Record<EnemyKind, EnemyDef> = {
   runner: {
     kind: "runner",
     name: "快速兵",
-    hp: 24,
+    hp: 32,
     speed: 110,
     armor: 0,
     goldDrop: [2, 4],
@@ -52,7 +52,7 @@ export const ENEMIES: Record<EnemyKind, EnemyDef> = {
   tank: {
     kind: "tank",
     name: "坦克兵",
-    hp: 140,
+    hp: 210,
     speed: 32,
     armor: 0.35,
     goldDrop: [8, 14],

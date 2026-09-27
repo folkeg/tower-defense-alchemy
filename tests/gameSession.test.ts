@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { GameSession } from "../src/core/gameSession";
 import { mulberry32 } from "../src/core/craftingEngine";
 import { LEVEL_1 } from "../src/config/waves";
+import { TOWER_SLOTS } from "../src/config/map";
+import type { TowerKind } from "../src/config/towers";
 
 function runWaveToCompletion(session: GameSession, maxSeconds = 120): void {
   const dt = 0.1;
@@ -136,5 +138,34 @@ describe("GameSession", () => {
     expect(warnings.length).toBeGreaterThan(0);
     expect(warnings[0].slotIndex).toBe(0);
     expect(["warning", "critical"]).toContain(warnings[0].urgency);
+  });
+
+  // 回归测试：曾经出现过"某些塔位到路径的最近距离 >= 塔的基础射程"或"贴着拐角只能
+  // 切到敌人一瞬间"的死区 bug（塔身消耗弹药/冷却正常运转，但实际命中次数接近 0，
+  // 敌人几乎不掉血）。这里逐个格子实测：只要在该格建塔（不装任何弹药，纯用塔身基础
+  // 属性），跑完整一波敌人后必须至少命中过一次，否则说明该格子是死区。
+  // 用"命中次数"而不是"击杀数/金币"作判据，避免与敌人血量数值调整产生耦合
+  // （死区判定应该只关心"够不够得到"，不应该关心"单塔火力够不够击杀"）。
+  describe("every tower slot can actually hit enemies on the fixed path (no dead zones)", () => {
+    TOWER_SLOTS.forEach((_pos, slotIndex) => {
+      (["melee", "splash"] as TowerKind[]).forEach((kind) => {
+        it(`slot ${slotIndex} with a ${kind} tower lands at least one hit during a full wave`, () => {
+          const session = new GameSession(LEVEL_1, mulberry32(100 + slotIndex));
+          session.placeTower(kind, slotIndex);
+          session.startNextWave();
+
+          let totalHits = 0;
+          const dt = 0.1;
+          let elapsed = 0;
+          while (session.phase === "battle" && elapsed < 200) {
+            session.update(dt);
+            totalHits += session.lastDamagePopups.length;
+            elapsed += dt;
+          }
+
+          expect(totalHits).toBeGreaterThan(0);
+        });
+      });
+    });
   });
 });
