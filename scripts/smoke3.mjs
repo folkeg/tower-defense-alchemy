@@ -7,6 +7,12 @@ await server.listen();
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+// 本脚本测试的是"老玩家"路径（建塔/购买/合成/拖拽/开战的核心循环回归)，
+// 与新手引导教程（见 scripts/tutorialSmoke.mjs）分开验证，
+// 因此提前标记教程已完成，避免全屏遮罩挡住这里手写的固定坐标点击序列。
+await page.addInitScript(() => {
+  window.localStorage.setItem('td_alchemy_tutorial_completed_v1', '1');
+});
 const errors = [];
 page.on('pageerror', (err) => errors.push('pageerror: ' + err.message));
 page.on('console', (msg) => {
